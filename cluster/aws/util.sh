@@ -1448,8 +1448,74 @@ function kube-down {
   fi
 }
 
-# Update a kubernetes cluster with latest source
 function kube-push {
+  detect-master
+  parse-master-env
+  build-runtime-config
+
+  # Make sure we have the tar files staged on Google Storage
+  find-release-tars
+  create-bootstrap-script
+  upload-server-tars
+
+  ensure-master-pd
+  ensure-master-ip
+
+  ensure-temp-dir
+  load-or-gen-kube-basicauth
+
+  #create-certs "${KUBE_MASTER_IP}" "${MASTER_INTERNAL_IP}"
+
+
+  build-config
+
+  write-master-env
+
+   (
+    echo "#! /bin/bash"
+    echo "mkdir -p /var/cache/kubernetes-install"
+    echo "cd /var/cache/kubernetes-install"
+
+    echo "cat > kube_env.yaml << __EOF_MASTER_KUBE_ENV_YAML"
+    cat ${KUBE_TEMP}/master-kube-env.yaml
+    echo "AUTO_UPGRADE: 'true'"
+    # TODO: get rid of these exceptions / harmonize with common or GCE
+    echo "DOCKER_STORAGE: $(yaml-quote ${DOCKER_STORAGE:-})"
+    echo "API_SERVERS: $(yaml-quote ${MASTER_INTERNAL_IP:-})"
+    echo "__EOF_MASTER_KUBE_ENV_YAML"
+    echo ""
+    echo "wget -O bootstrap ${BOOTSTRAP_SCRIPT_URL}"
+    echo "chmod +x bootstrap"
+    echo "mkdir -p /etc/kubernetes"
+    echo "mv kube_env.yaml /etc/kubernetes"
+    echo "mv bootstrap /etc/kubernetes/"
+    echo "cat > /etc/rc.local << EOF_RC_LOCAL"
+    echo "#!/bin/sh -e"
+    # We want to be sure that we don't pass an argument to bootstrap
+    echo "/etc/kubernetes/bootstrap"
+    echo "exit 0"
+    echo "EOF_RC_LOCAL"
+    echo "/etc/kubernetes/bootstrap"
+  )  > "${KUBE_TEMP}/updateMasterScript"
+
+  echo "created update script:"
+  echo "${KUBE_TEMP}/updateMasterScript"
+
+  (
+    cat ${KUBE_TEMP}/updateMasterScript
+  ) | ssh -oStrictHostKeyChecking=no -i "${AWS_SSH_KEY}" ${SSH_USER}@${KUBE_MASTER_IP} sudo bash
+
+  get-kubeconfig-basicauth
+
+  echo
+  echo "Kubernetes cluster is running.  The master is running at:"
+  echo
+  echo "  https://${KUBE_MASTER_IP}"
+  echo
+}
+
+# Update a kubernetes cluster with latest source
+function kube-push2 {
   detect-master
 
   # Make sure we have the tar files staged on Google Storage
@@ -1463,7 +1529,7 @@ function kube-push {
     echo "cd /var/cache/kubernetes-install"
     echo "readonly SERVER_BINARY_TAR_URL='${SERVER_BINARY_TAR_URL}'"
     echo "readonly SALT_TAR_URL='${SALT_TAR_URL}'"
-    grep -v "^#" "${KUBE_ROOT}/cluster/aws/templates/common.sh"
+    grep -v "^#" "${KUBE_ROOT}/cluster/aws/common/common.sh"
     grep -v "^#" "${KUBE_ROOT}/cluster/aws/templates/download-release.sh"
     echo "echo Executing configuration"
     echo "sudo salt '*' mine.update"
